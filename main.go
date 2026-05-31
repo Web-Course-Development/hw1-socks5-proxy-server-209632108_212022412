@@ -112,21 +112,46 @@ func handleConnection(conn net.Conn) {
 	}
 	log.Printf("Client wants to connect to destination: %s", targetAddr)
 
-	// 4. Connect to target server
-
-	// establish a standard TCP outbound connection to the parsed destination
+	// 4. Connect to target server via net.Dial
 	target, err := net.Dial("tcp", targetAddr)
 	if err != nil {
 		log.Printf("Failed to dial target server %s: %v", targetAddr, err)
-		// if connecting fails, we will handle sending the error packet in Step 5, for now, we return to close the client connection safely.
+		
+		// 5. Send an ERROR reply back to the client if the dial fails
+		// Format: [Version, ReplyCode, Reserved, AddressType, EmptyIP(4B), EmptyPort(2B)]
+		errReply := []byte{socksVersion, repServerFail, 0x00, atypIPv4, 0, 0, 0, 0, 0, 0}
+		conn.Write(errReply)
 		return
 	}
-	// closing outbound pipe 
 	defer target.Close()
 
+	// 5. Send a SUCCESS reply back to the client
+	// The protocol requires a 10-byte response confirming connection status
+	// Format: [Version, SuccessCode, Reserved, AddressType, BoundIP(4B), BoundPort(2B)]
+	successReply := []byte{socksVersion, repSuccess, 0x00, atypIPv4, 0, 0, 0, 0, 0, 0}
+	if _, err := conn.Write(successReply); err != nil {
+		log.Printf("Failed to write success reply to client: %v", err)
+		return
+	}
 
-	// 5. Send success/error reply
-	// 6. Relay data between client and target
+	// 6. Relay data bidirectionally between client and target server
+	// We create two asynchronous channels to pass any fatal error signals
+	errChan := make(chan error, 2)
+
+	// Copy data from the client's browser to the target internet server
+	go func() {
+		_, err := io.Copy(target, conn)
+		errChan <- err
+	}()
+
+	// Copy data from the target internet server back to the client's browser
+	go func() {
+		_, err := io.Copy(conn, target)
+		errChan <- err
+	}()
+
+	// Wait for either data stream pipe to finish or error out
+	<-errChan
 }
 	
 	
