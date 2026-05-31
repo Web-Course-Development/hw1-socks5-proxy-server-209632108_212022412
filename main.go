@@ -84,8 +84,66 @@ func handleConnection(conn net.Conn) {
 
 	// if username/password auth was selected, we need to handle the login details next
 	if authMethod == methodUserPass {
-		
+		if !authenticateUserPass(conn) {
+			log.Printf("Authentication failed for client connection")
+			return
+		}
 	}
+
+   // helper function: reads the login packet from the client and validates credentials
+   func authenticateUserPass(conn net.Conn) bool {
+	// read the sub-negotiation header 
+	header := make([]byte, 2)
+	if _, err := conn.Read(header); err != nil {
+		log.Printf("Failed to read auth header: %v", err)
+		return false
+	}
+
+	// check if the auth sub-negotiation version is 0x01
+	if header[0] != authVersion {
+		log.Printf("Unsupported auth version: %d", header[0])
+		return false
+	}
+
+	usernameLen := int(header[1])
+	usernameBuf := make([]byte, usernameLen)
+	
+	// read the actual username characters
+	if _, err := conn.Read(usernameBuf); err != nil {
+		log.Printf("Failed to read username: %v", err)
+		return false
+	}
+
+	// read the password length (1 byte)
+	passLenBuf := make([]byte, 1)
+	if _, err := conn.Read(passLenBuf); err != nil {
+		log.Printf("Failed to read password length: %v", err)
+		return false
+	}
+
+	passLen := int(passLenBuf[0])
+	passwordBuf := make([]byte, passLen)
+
+	// read the actual password characters
+	if _, err := conn.Read(passwordBuf); err != nil {
+		log.Printf("Failed to read password: %v", err)
+		return false
+	}
+
+	// compare with our server environment variables
+	expectedUser := os.Getenv("PROXY_USER")
+	expectedPass := os.Getenv("PROXY_PASS")
+
+	if string(usernameBuf) == expectedUser && string(passwordBuf) == expectedPass {
+		// if we reached here that means we successed therefore reply with status 0x00
+		conn.Write([]byte{authVersion, 0x00})
+		return true
+	}
+
+	// if we reached here that means we failed therefore reply with status 0x01
+	conn.Write([]byte{authVersion, 0x01})
+	return false
+}
 
 	// 3. Read CONNECT request
 	// 4. Connect to target server
