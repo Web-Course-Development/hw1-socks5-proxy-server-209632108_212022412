@@ -50,6 +50,8 @@ func handleConnection(conn net.Conn) {
 
 	// TODO: Implement SOCKS5 protocol
 
+	// 1. read client greeting & negotiate auth
+
 	// create a small slice to hold the first 2 bytes from the client
 	header := make([]byte, 2)
 	
@@ -88,6 +90,8 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 
+	// 2. perform sub-negotiation auth if required 
+
 	// if username/password auth was selected, we need to handle the login details next
 	if authMethod == methodUserPass {
 		if !authenticateUserPass(conn) {
@@ -96,7 +100,7 @@ func handleConnection(conn net.Conn) {
 		}
 	}
 
-	// read connect request
+	// 3. read connect request
 	targetAddr, err := readConnectRequest(conn)
 	if err != nil {
 		log.Printf("Failed to read connect request: %v", err)
@@ -104,11 +108,14 @@ func handleConnection(conn net.Conn) {
 	}
 	log.Printf("Client wants to connect to destination: %s", targetAddr)
 
-   
+	// 4. Connect to target server
+	// 5. Send success/error reply
+	// 6. Relay data between client and target
+}
 	
 	
-	// helper function: reads the login packet from the client and validates credentials
-   func authenticateUserPass(conn net.Conn) bool {
+ // helper function: reads the login packet from the client and validates credentials
+ func authenticateUserPass(conn net.Conn) bool {
 	// read the sub-negotiation header 
 	header := make([]byte, 2)
 	if _, err := conn.Read(header); err != nil {
@@ -222,14 +229,6 @@ func handleConnection(conn net.Conn) {
 	targetAddr := fmt.Sprintf("%s:%d", host, port)
 	return targetAddr, nil
 
-
-
-
-
-
-
 }
-	// 4. Connect to target server
-	// 5. Send success/error reply
-	// 6. Relay data between client and target
-}
+
+
