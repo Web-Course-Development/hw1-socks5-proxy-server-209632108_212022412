@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -15,12 +16,15 @@ const (
 	methodUserPass = 0x02
 	methodAuthFail = 0xFF
 
-	authVersion    = 0x01
+	authVersion = 0x01
 
-	cmdConnect     = 0x01 
+	cmdConnect = 0x01
 
-	atypIPv4       = 0x01 // IPv4
-	atypDomain     = 0x03 
+	atypIPv4   = 0x01 // IPv4
+	atypDomain = 0x03
+
+	repSuccess     = 0x00 // success
+	repServerFail  = 0x01 // server failure
 )
 
 func main() {
