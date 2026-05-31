@@ -7,6 +7,12 @@ import (
 	"net"
 )
 
+const (
+	socksVersion   = 0x05
+	methodNoAuth   = 0x00
+	methodAuthFail = 0xFF
+)
+
 func main() {
 	port := flag.Int("port", 1080, "port to listen on")
 	flag.Parse()
