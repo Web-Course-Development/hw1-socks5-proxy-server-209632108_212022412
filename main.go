@@ -15,7 +15,12 @@ const (
 	methodUserPass = 0x02
 	methodAuthFail = 0xFF
 
-	authVersion    = 0x01 // byte for username/password sub-negotiation is 1
+	authVersion    = 0x01
+
+	cmdConnect     = 0x01 
+
+	atypIPv4       = 0x01 // IPv4
+	atypDomain     = 0x03 
 )
 
 func main() {
@@ -91,7 +96,18 @@ func handleConnection(conn net.Conn) {
 		}
 	}
 
-   // helper function: reads the login packet from the client and validates credentials
+	// read connect request
+	targetAddr, err := readConnectRequest(conn)
+	if err != nil {
+		log.Printf("Failed to read connect request: %v", err)
+		return
+	}
+	log.Printf("Client wants to connect to destination: %s", targetAddr)
+
+   
+	
+	
+	// helper function: reads the login packet from the client and validates credentials
    func authenticateUserPass(conn net.Conn) bool {
 	// read the sub-negotiation header 
 	header := make([]byte, 2)
@@ -146,7 +162,73 @@ func handleConnection(conn net.Conn) {
 	return false
 }
 
-	// 3. Read CONNECT request
+   // helper function: parses the client's target destination details from the socket stream
+   func readConnectRequest(conn net.Conn) (string, error) {
+	// read the first 4 bytes of the request header
+	// [Version (1B), Command (1B), Reserved (1B), Address Type (1B)]
+	header := make([]byte, 4)
+	if _, err := conn.Read(header); err != nil {
+		return "", fmt.Errorf("failed to read request header: %v", err)
+	}
+
+	if header[0] != socksVersion {
+		return "", fmt.Errorf("unsupported request SOCKS version: %d", header[0])
+	}
+
+	if header[1] != cmdConnect {
+		return "", fmt.Errorf("unsupported command code: %d", header[1])
+	}
+
+	atyp := header[3]
+	var host string
+
+	// parse the target host based on Address Type (ATYP)
+	switch atyp {
+	case atypIPv4:
+		// IPv4 address is exactly 4 bytes long
+		ipBuf := make([]byte, 4)
+		if _, err := conn.Read(ipBuf); err != nil {
+			return "", fmt.Errorf("failed to read IPv4 address: %v", err)
+		}
+		host = net.IP(ipBuf).String()
+
+	case atypDomain:
+		// first byte indicates the length of the domain name string
+		lenBuf := make([]byte, 1)
+		if _, err := conn.Read(lenBuf); err != nil {
+			return "", fmt.Errorf("failed to read domain length: %v", err)
+		}
+		domainLen := int(lenBuf[0])
+
+		domainBuf := make([]byte, domainLen)
+		if _, err := conn.Read(domainBuf); err != nil {
+			return "", fmt.Errorf("failed to read domain name string: %v", err)
+		}
+		host = string(domainBuf)
+
+	default:
+		return "", fmt.Errorf("unsupported address type: %d", atyp)
+	}
+
+	// read the final 2 bytes for the Port number
+	portBuf := make([]byte, 2)
+	if _, err := conn.Read(portBuf); err != nil {
+		return "", fmt.Errorf("failed to read port bytes: %v", err)
+	}
+	// parse the 2 bytes as a Big-Endian uint16 value
+	port := binary.BigEndian.Uint16(portBuf)
+
+	// combine the host address string and port integer into a standard format: "host:port"
+	targetAddr := fmt.Sprintf("%s:%d", host, port)
+	return targetAddr, nil
+
+
+
+
+
+
+
+}
 	// 4. Connect to target server
 	// 5. Send success/error reply
 	// 6. Relay data between client and target
