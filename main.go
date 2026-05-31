@@ -109,6 +109,18 @@ func handleConnection(conn net.Conn) {
 	log.Printf("Client wants to connect to destination: %s", targetAddr)
 
 	// 4. Connect to target server
+
+	// establish a standard TCP outbound connection to the parsed destination
+	target, err := net.Dial("tcp", targetAddr)
+	if err != nil {
+		log.Printf("Failed to dial target server %s: %v", targetAddr, err)
+		// if connecting fails, we will handle sending the error packet in Step 5, for now, we return to close the client connection safely.
+		return
+	}
+	// closing outbound pipe 
+	defer target.Close()
+
+
 	// 5. Send success/error reply
 	// 6. Relay data between client and target
 }
