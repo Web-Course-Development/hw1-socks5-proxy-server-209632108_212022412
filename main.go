@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 )
 
 const (
@@ -42,7 +43,6 @@ func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	// TODO: Implement SOCKS5 protocol
-	// 1. Read client greeting and negotiate authentication method
 
 	// create a small slice to hold the first 2 bytes from the client
 	header := make([]byte, 2)
@@ -69,14 +69,24 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 
-	// we send a 2-byte reply back to the client: [Version, SelectedMethod]
-	reply := []byte{socksVersion, methodNoAuth}
+    // determine which authentication method we require
+	authMethod := byte(methodNoAuth)
+	if os.Getenv("PROXY_USER") != "" {
+		authMethod = methodUserPass
+	}
+
+	// send a 2-byte reply back to the client: [Version, SelectedMethod]
+	reply := []byte{socksVersion, authMethod}
 	if _, err := conn.Write(reply); err != nil {
 		log.Printf("Failed to write handshake reply: %v", err)
 		return
 	}
 
-	// 2. Perform authentication if required (when PROXY_USER env var is set)
+	// if username/password auth was selected, we need to handle the login details next
+	if authMethod == methodUserPass {
+		
+	}
+
 	// 3. Read CONNECT request
 	// 4. Connect to target server
 	// 5. Send success/error reply
