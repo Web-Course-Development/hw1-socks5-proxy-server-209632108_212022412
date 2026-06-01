@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sync"
 )
 
 const (
@@ -23,8 +24,8 @@ const (
 	atypIPv4   = 0x01 // IPv4
 	atypDomain = 0x03
 
-	repSuccess     = 0x00 // success
-	repServerFail  = 0x01 // server failure
+	repSuccess    = 0x00 // success
+	repServerFail = 0x01 // server failure
 )
 
 func main() {
@@ -52,51 +53,52 @@ func main() {
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	// TODO: Implement SOCKS5 protocol
-
 	// 1. read client greeting & negotiate auth
 
-	// create a small slice to hold the first 2 bytes from the client
 	header := make([]byte, 2)
-	
-	// read exactly 2 bytes from the network connection
-	if _, err := conn.Read(header); err != nil {
+	if _, err := io.ReadFull(conn, header); err != nil {
 		log.Printf("Failed to read greeting header: %v", err)
 		return
 	}
 
-	// check if the first byte matches SOCKS version 5
 	if header[0] != socksVersion {
 		log.Printf("Unsupported SOCKS version: %d", header[0])
 		return
 	}
 
-	// the second byte tells us how many authentication methods follow
 	numMethods := int(header[1])
 	methods := make([]byte, numMethods)
 
-	// read the remaining method bytes from the network connection
-	if _, err := conn.Read(methods); err != nil {
+	if _, err := io.ReadFull(conn, methods); err != nil {
 		log.Printf("Failed to read methods: %v", err)
 		return
 	}
 
-    // determine which authentication method we require
-	authMethod := byte(methodNoAuth)
-	if os.Getenv("PROXY_USER") != "" {
-		authMethod = methodUserPass
+	authMethod := byte(methodAuthFail)
+	requiresAuth := os.Getenv("PROXY_USER") != ""
+
+	for _, m := range methods {
+		if requiresAuth && m == methodUserPass {
+			authMethod = methodUserPass
+			break
+		} else if !requiresAuth && m == methodNoAuth {
+			authMethod = methodNoAuth
+			break
+		}
 	}
 
-	// send a 2-byte reply back to the client: [Version, SelectedMethod]
 	reply := []byte{socksVersion, authMethod}
 	if _, err := conn.Write(reply); err != nil {
 		log.Printf("Failed to write handshake reply: %v", err)
 		return
 	}
 
-	// 2. perform sub-negotiation auth if required 
+	if authMethod == methodAuthFail {
+		return
+	}
 
-	// if username/password auth was selected, we need to handle the login details next
+	// 2. perform sub-negotiation auth if required
+
 	if authMethod == methodUserPass {
 		if !authenticateUserPass(conn) {
 			log.Printf("Authentication failed for client connection")
@@ -116,9 +118,7 @@ func handleConnection(conn net.Conn) {
 	target, err := net.Dial("tcp", targetAddr)
 	if err != nil {
 		log.Printf("Failed to dial target server %s: %v", targetAddr, err)
-		
-		// 5. Send an ERROR reply back to the client if the dial fails
-		// Format: [Version, ReplyCode, Reserved, AddressType, EmptyIP(4B), EmptyPort(2B)]
+
 		errReply := []byte{socksVersion, repServerFail, 0x00, atypIPv4, 0, 0, 0, 0, 0, 0}
 		conn.Write(errReply)
 		return
@@ -126,8 +126,6 @@ func handleConnection(conn net.Conn) {
 	defer target.Close()
 
 	// 5. Send a SUCCESS reply back to the client
-	// The protocol requires a 10-byte response confirming connection status
-	// Format: [Version, SuccessCode, Reserved, AddressType, BoundIP(4B), BoundPort(2B)]
 	successReply := []byte{socksVersion, repSuccess, 0x00, atypIPv4, 0, 0, 0, 0, 0, 0}
 	if _, err := conn.Write(successReply); err != nil {
 		log.Printf("Failed to write success reply to client: %v", err)
@@ -135,36 +133,29 @@ func handleConnection(conn net.Conn) {
 	}
 
 	// 6. Relay data bidirectionally between client and target server
-	// We create two asynchronous channels to pass any fatal error signals
-	errChan := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
 
-	// Copy data from the client's browser to the target internet server
 	go func() {
-		_, err := io.Copy(target, conn)
-		errChan <- err
+		defer wg.Done()
+		io.Copy(target, conn)
 	}()
 
-	// Copy data from the target internet server back to the client's browser
 	go func() {
-		_, err := io.Copy(conn, target)
-		errChan <- err
+		defer wg.Done()
+		io.Copy(conn, target)
 	}()
 
-	// Wait for either data stream pipe to finish or error out
-	<-errChan
+	wg.Wait()
 }
-	
-	
- // helper function: reads the login packet from the client and validates credentials
- func authenticateUserPass(conn net.Conn) bool {
-	// read the sub-negotiation header 
+
+func authenticateUserPass(conn net.Conn) bool {
 	header := make([]byte, 2)
-	if _, err := conn.Read(header); err != nil {
+	if _, err := io.ReadFull(conn, header); err != nil {
 		log.Printf("Failed to read auth header: %v", err)
 		return false
 	}
 
-	// check if the auth sub-negotiation version is 0x01
 	if header[0] != authVersion {
 		log.Printf("Unsupported auth version: %d", header[0])
 		return false
@@ -172,16 +163,14 @@ func handleConnection(conn net.Conn) {
 
 	usernameLen := int(header[1])
 	usernameBuf := make([]byte, usernameLen)
-	
-	// read the actual username characters
-	if _, err := conn.Read(usernameBuf); err != nil {
+
+	if _, err := io.ReadFull(conn, usernameBuf); err != nil {
 		log.Printf("Failed to read username: %v", err)
 		return false
 	}
 
-	// read the password length (1 byte)
 	passLenBuf := make([]byte, 1)
-	if _, err := conn.Read(passLenBuf); err != nil {
+	if _, err := io.ReadFull(conn, passLenBuf); err != nil {
 		log.Printf("Failed to read password length: %v", err)
 		return false
 	}
@@ -189,33 +178,26 @@ func handleConnection(conn net.Conn) {
 	passLen := int(passLenBuf[0])
 	passwordBuf := make([]byte, passLen)
 
-	// read the actual password characters
-	if _, err := conn.Read(passwordBuf); err != nil {
+	if _, err := io.ReadFull(conn, passwordBuf); err != nil {
 		log.Printf("Failed to read password: %v", err)
 		return false
 	}
 
-	// compare with our server environment variables
 	expectedUser := os.Getenv("PROXY_USER")
 	expectedPass := os.Getenv("PROXY_PASS")
 
 	if string(usernameBuf) == expectedUser && string(passwordBuf) == expectedPass {
-		// if we reached here that means we successed therefore reply with status 0x00
 		conn.Write([]byte{authVersion, 0x00})
 		return true
 	}
 
-	// if we reached here that means we failed therefore reply with status 0x01
 	conn.Write([]byte{authVersion, 0x01})
 	return false
 }
 
-   // helper function: parses the client's target destination details from the socket stream
-   func readConnectRequest(conn net.Conn) (string, error) {
-	// read the first 4 bytes of the request header
-	// [Version (1B), Command (1B), Reserved (1B), Address Type (1B)]
+func readConnectRequest(conn net.Conn) (string, error) {
 	header := make([]byte, 4)
-	if _, err := conn.Read(header); err != nil {
+	if _, err := io.ReadFull(conn, header); err != nil {
 		return "", fmt.Errorf("failed to read request header: %v", err)
 	}
 
@@ -230,26 +212,23 @@ func handleConnection(conn net.Conn) {
 	atyp := header[3]
 	var host string
 
-	// parse the target host based on Address Type (ATYP)
 	switch atyp {
 	case atypIPv4:
-		// IPv4 address is exactly 4 bytes long
 		ipBuf := make([]byte, 4)
-		if _, err := conn.Read(ipBuf); err != nil {
+		if _, err := io.ReadFull(conn, ipBuf); err != nil {
 			return "", fmt.Errorf("failed to read IPv4 address: %v", err)
 		}
 		host = net.IP(ipBuf).String()
 
 	case atypDomain:
-		// first byte indicates the length of the domain name string
 		lenBuf := make([]byte, 1)
-		if _, err := conn.Read(lenBuf); err != nil {
+		if _, err := io.ReadFull(conn, lenBuf); err != nil {
 			return "", fmt.Errorf("failed to read domain length: %v", err)
 		}
 		domainLen := int(lenBuf[0])
 
 		domainBuf := make([]byte, domainLen)
-		if _, err := conn.Read(domainBuf); err != nil {
+		if _, err := io.ReadFull(conn, domainBuf); err != nil {
 			return "", fmt.Errorf("failed to read domain name string: %v", err)
 		}
 		host = string(domainBuf)
@@ -258,18 +237,12 @@ func handleConnection(conn net.Conn) {
 		return "", fmt.Errorf("unsupported address type: %d", atyp)
 	}
 
-	// read the final 2 bytes for the Port number
 	portBuf := make([]byte, 2)
-	if _, err := conn.Read(portBuf); err != nil {
+	if _, err := io.ReadFull(conn, portBuf); err != nil {
 		return "", fmt.Errorf("failed to read port bytes: %v", err)
 	}
-	// parse the 2 bytes as a Big-Endian uint16 value
 	port := binary.BigEndian.Uint16(portBuf)
 
-	// combine the host address string and port integer into a standard format: "host:port"
 	targetAddr := fmt.Sprintf("%s:%d", host, port)
 	return targetAddr, nil
-
 }
-
-
